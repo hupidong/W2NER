@@ -16,8 +16,8 @@
   "conv_dropout": 0.5,
   "out_dropout": 0.33,
 
-  "epochs": 10,
-  "batch_size": 12,
+  "epochs": 30,
+  "batch_size": 2,
 
   "learning_rate": 1e-3,
   "weight_decay": 0,
@@ -28,6 +28,8 @@
   "warm_factor": 0.1,
 
   "use_bert_last_4_layers": true,
+  "use_checkpoint": false,
+
   "seed": 123
 
 }

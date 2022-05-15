@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 from transformers import AutoModel
+from torch.utils.checkpoint import checkpoint
 
 
 class LayerNorm(nn.Module):
@@ -182,6 +183,7 @@ class CoPredictor(nn.Module):
 class Model(nn.Module):
     def __init__(self, config):
         super(Model, self).__init__()
+        self.use_checkpoint = config.use_checkpoint
         self.use_bert_last_4_layers = config.use_bert_last_4_layers
 
         self.lstm_hid_size = config.lstm_hid_size
@@ -217,7 +219,10 @@ class Model(nn.Module):
         :param sent_length: [B]
         :return:
         '''
-        bert_embs = self.bert(input_ids=bert_inputs, attention_mask=bert_inputs.ne(0).float())
+        if self.use_checkpoint:
+            bert_embs = checkpoint(self.bert, bert_inputs, bert_inputs.ne(0).float())
+        else:
+            bert_embs = self.bert(input_ids=bert_inputs, attention_mask=bert_inputs.ne(0).float())
         if self.use_bert_last_4_layers:
             bert_embs = torch.stack(bert_embs[2][-4:], dim=-1).mean(-1)
         else:
@@ -230,24 +235,47 @@ class Model(nn.Module):
         # Max pooling word representations from pieces
         _bert_embs = bert_embs.unsqueeze(1).expand(-1, length, -1, -1)
         _bert_embs = torch.masked_fill(_bert_embs, pieces2word.eq(0).unsqueeze(-1), min_value)
-        word_reps, _ = torch.max(_bert_embs, dim=2)
+        word_reps, _ = torch.max(_bert_embs, dim=2)  # word representation 1
 
-        word_reps = self.dropout(word_reps)
+        word_reps = self.dropout(word_reps)  # word representation 2
         packed_embs = pack_padded_sequence(word_reps, sent_length.cpu(), batch_first=True, enforce_sorted=False)
-        packed_outs, (hidden, _) = self.encoder(packed_embs)
-        word_reps, _ = pad_packed_sequence(packed_outs, batch_first=True, total_length=sent_length.max())
 
-        cln = self.cln(word_reps.unsqueeze(2), word_reps)
+        if self.use_checkpoint:
+            packed_outs, (hidden, _) = checkpoint(self.encoder, packed_embs)
+        else:
+            packed_outs, (hidden, _) = self.encoder(packed_embs)
+        word_reps, _ = pad_packed_sequence(packed_outs, batch_first=True,
+                                           total_length=sent_length.max())  # word representation  3
 
-        dis_emb = self.dis_embs(dist_inputs)
+        if self.use_checkpoint:
+            cln = checkpoint(self.cln, word_reps.unsqueeze(2), word_reps)
+        else:
+            cln = self.cln(word_reps.unsqueeze(2), word_reps)
+
+        if self.use_checkpoint:
+            dis_emb = self.dis_embs(dist_inputs)
+        else:
+            dis_emb = self.dis_embs(dist_inputs)
         tril_mask = torch.tril(grid_mask2d.clone().long())
-        reg_inputs = tril_mask + grid_mask2d.clone().long()
-        reg_emb = self.reg_embs(reg_inputs)
+        reg_inputs = tril_mask + grid_mask2d.clone().long()  # 0，1，2（pad, 上三角，下三角）三种region
+
+        if self.use_checkpoint:
+            reg_emb = checkpoint(self.reg_embs, reg_inputs)
+        else:
+            reg_emb = self.reg_embs(reg_inputs)
 
         conv_inputs = torch.cat([dis_emb, reg_emb, cln], dim=-1)
         conv_inputs = torch.masked_fill(conv_inputs, grid_mask2d.eq(0).unsqueeze(-1), 0.0)
-        conv_outputs = self.convLayer(conv_inputs)
+
+        if self.use_checkpoint:
+            conv_outputs = checkpoint(self.convLayer, conv_inputs)
+        else:
+            conv_outputs = self.convLayer(conv_inputs)
         conv_outputs = torch.masked_fill(conv_outputs, grid_mask2d.eq(0).unsqueeze(-1), 0.0)
-        outputs = self.predictor(word_reps, word_reps, conv_outputs)
+
+        if self.use_checkpoint:
+            outputs = checkpoint(self.predictor, word_reps, word_reps, conv_outputs)
+        else:
+            outputs = self.predictor(word_reps, word_reps, conv_outputs)
 
         return outputs

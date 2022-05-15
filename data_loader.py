@@ -5,13 +5,13 @@ from torch.nn.utils.rnn import pad_sequence
 import numpy as np
 import prettytable as pt
 from gensim.models import KeyedVectors
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, BertTokenizer
 import os
 import utils
 import requests
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
-dis2idx = np.zeros((1000), dtype='int64')
+dis2idx = np.zeros((1600), dtype='int64')
 dis2idx[1] = 1
 dis2idx[2:] = 2
 dis2idx[4:] = 3
@@ -99,7 +99,7 @@ class RelationDataset(Dataset):
         return len(self.bert_inputs)
 
 
-def process_bert(data, tokenizer, vocab):
+def process_bert(data, tokenizer: BertTokenizer, vocab):
 
     bert_inputs = []
     grid_labels = []
@@ -113,10 +113,16 @@ def process_bert(data, tokenizer, vocab):
         if len(instance['sentence']) == 0:
             continue
 
+        '''
         tokens = [tokenizer.tokenize(word) for word in instance['sentence']]
         pieces = [piece for pieces in tokens for piece in pieces]
         _bert_inputs = tokenizer.convert_tokens_to_ids(pieces)
         _bert_inputs = np.array([tokenizer.cls_token_id] + _bert_inputs + [tokenizer.sep_token_id])
+        '''
+
+        tokens = [tokenizer.tokenize(word) for word in instance['sentence']]
+        _bert_inputs = tokenizer(instance['sentence'], is_split_into_words=True, truncation=True, max_length=512)
+        _bert_inputs = np.array(_bert_inputs['input_ids'])
 
         length = len(instance['sentence'])
         _grid_labels = np.zeros((length, length), dtype=np.int)
@@ -137,7 +143,7 @@ def process_bert(data, tokenizer, vocab):
             _dist_inputs[k, :] += k
             _dist_inputs[:, k] -= k
 
-        for i in range(length):
+        for i in range(length):  # TODO 这段骚操作没看懂
             for j in range(length):
                 if _dist_inputs[i, j] < 0:
                     _dist_inputs[i, j] = dis2idx[-_dist_inputs[i, j]] + 9

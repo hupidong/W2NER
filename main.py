@@ -67,16 +67,16 @@ class Trainer(object):
             grid_labels = grid_labels[grid_mask2d].contiguous().view(-1)
             outputs = outputs[grid_mask2d].contiguous().view(-1)
 
-            label_result.append(grid_labels)
-            pred_result.append(outputs)
+            label_result.append(grid_labels.cpu())
+            pred_result.append(outputs.cpu())
 
             self.scheduler.step()
 
         label_result = torch.cat(label_result)
         pred_result = torch.cat(pred_result)
 
-        p, r, f1, _ = precision_recall_fscore_support(label_result.cpu().numpy(),
-                                                      pred_result.cpu().numpy(),
+        p, r, f1, _ = precision_recall_fscore_support(label_result.numpy(),
+                                                      pred_result.numpy(),
                                                       average="macro")
 
         table = pt.PrettyTable(["Train {}".format(epoch), "Loss", "F1", "Precision", "Recall"])
@@ -91,9 +91,9 @@ class Trainer(object):
         pred_result = []
         label_result = []
 
-        total_ent_r = 0
-        total_ent_p = 0
-        total_ent_c = 0
+        total_ent_real = 0
+        total_ent_pred = 0
+        total_ent_cross = 0
         with torch.no_grad():
             for i, data_batch in enumerate(data_loader):
                 entity_text = data_batch[-1]
@@ -106,25 +106,25 @@ class Trainer(object):
                 grid_mask2d = grid_mask2d.clone()
 
                 outputs = torch.argmax(outputs, -1)
-                ent_c, ent_p, ent_r, _ = utils.decode(outputs.cpu().numpy(), entity_text, length.cpu().numpy())
+                ent_cross, ent_pred, ent_real, _ = utils.decode(outputs.cpu().numpy(), entity_text, length.cpu().numpy())
 
-                total_ent_r += ent_r
-                total_ent_p += ent_p
-                total_ent_c += ent_c
+                total_ent_real += ent_real
+                total_ent_pred += ent_pred
+                total_ent_cross += ent_cross
 
                 grid_labels = grid_labels[grid_mask2d].contiguous().view(-1)
                 outputs = outputs[grid_mask2d].contiguous().view(-1)
 
-                label_result.append(grid_labels)
-                pred_result.append(outputs)
+                label_result.append(grid_labels.cpu())
+                pred_result.append(outputs.cpu())
 
         label_result = torch.cat(label_result)
         pred_result = torch.cat(pred_result)
 
         p, r, f1, _ = precision_recall_fscore_support(label_result.cpu().numpy(),
                                                       pred_result.cpu().numpy(),
-                                                      average="macro")
-        e_f1, e_p, e_r = utils.cal_f1(total_ent_c, total_ent_p, total_ent_r)
+                                                      average="macro")  # 此处是word-word-pair-relation的评价
+        ent_f1, ent_p, ent_r = utils.cal_f1(total_ent_cross, total_ent_pred, total_ent_real)
 
         title = "EVAL" if not is_test else "TEST"
         logger.info('{} Label F1 {}'.format(title, f1_score(label_result.cpu().numpy(),
@@ -133,10 +133,10 @@ class Trainer(object):
 
         table = pt.PrettyTable(["{} {}".format(title, epoch), 'F1', "Precision", "Recall"])
         table.add_row(["Label"] + ["{:3.4f}".format(x) for x in [f1, p, r]])
-        table.add_row(["Entity"] + ["{:3.4f}".format(x) for x in [e_f1, e_p, e_r]])
+        table.add_row(["Entity"] + ["{:3.4f}".format(x) for x in [ent_f1, ent_p, ent_r]])
 
         logger.info("\n{}".format(table))
-        return e_f1
+        return ent_f1
 
     def predict(self, epoch, data_loader, data):
         self.model.eval()
@@ -181,8 +181,8 @@ class Trainer(object):
                 grid_labels = grid_labels[grid_mask2d].contiguous().view(-1)
                 outputs = outputs[grid_mask2d].contiguous().view(-1)
 
-                label_result.append(grid_labels)
-                pred_result.append(outputs)
+                label_result.append(grid_labels.cpu())
+                pred_result.append(outputs.cpu())
                 i += config.batch_size
 
         label_result = torch.cat(label_result)
@@ -218,10 +218,10 @@ class Trainer(object):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--config', type=str, default='./config/conll03.json')
-    parser.add_argument('--save_path', type=str, default='./model.pt')
-    parser.add_argument('--predict_path', type=str, default='./output.json')
-    parser.add_argument('--device', type=int, default=0)
+    parser.add_argument('--config', type=str)
+    parser.add_argument('--save_path', type=str)
+    parser.add_argument('--predict_path', type=str)
+    parser.add_argument('--device', type=int)
 
     parser.add_argument('--dist_emb_size', type=int)
     parser.add_argument('--type_emb_size', type=int)
@@ -278,8 +278,8 @@ if __name__ == '__main__':
                    batch_size=config.batch_size,
                    collate_fn=data_loader.collate_fn,
                    shuffle=i == 0,
-                   num_workers=4,
-                   drop_last=i == 0)
+                   num_workers=0,
+                   drop_last=(i == 0))
         for i, dataset in enumerate(datasets)
     )
 

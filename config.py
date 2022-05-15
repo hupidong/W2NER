@@ -35,6 +35,7 @@ class Config:
         self.warm_factor = config["warm_factor"]
 
         self.use_bert_last_4_layers = config["use_bert_last_4_layers"]
+        self.use_checkpoint = config["use_checkpoint"]
 
         self.seed = config["seed"]
 
