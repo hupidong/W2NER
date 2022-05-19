@@ -109,3 +109,30 @@ def cal_f1(c, p, r):
     if r and p:
         return 2 * p * r / (p + r), p, r
     return 0, p, r
+
+
+def w2ner2cluener(src=None):
+    """convert w2ner output json file to cluener json file for evaluation"""
+    clue_list = []
+    for sample in src:
+        clue_sample = {}
+        sent_id = sample['id']
+        sent = sample['sentence']
+        clue_sample['id'] = sent_id
+        #clue_sample['sentence'] = sent
+        entities = sample['entity']
+        labels = {}
+        for entity in entities:
+            name = entity['type']
+            text = ''.join(entity['text'])
+            index = [entity['index'][0], entity['index'][-1]]
+            if name in labels:
+                if text in labels[name]:
+                    labels[name][text].append(index)
+                else:
+                    labels[name][text] = [index]
+            else:
+                labels[name] = {text: [index]}
+        clue_sample['label'] = labels
+        clue_list.append(clue_sample)
+    return clue_list
