@@ -8,19 +8,23 @@ def cluener2w2ner(src_root_path=None, tgt_root_path=None):
     """w2ner: """
     train_path = os.path.join(src_root_path, 'train.json.raw')
     dev_path = os.path.join(src_root_path, 'dev.json.raw')
+    test_path = os.path.join(src_root_path, 'test.json.raw')
 
     # load original data
     train = load_data(data_path=train_path)
     dev = load_data(data_path=dev_path)
+    test = load_data(data_path=test_path)
 
     # transform
     train = transform2w2ner(src=train)
     dev = transform2w2ner(src=dev)
+    test = transform2w2ner(src=test, unlabel=True)
 
     # save
     print('\nsaving dataset:\n')
     save2w2ner(obj=train, save_path=os.path.join(tgt_root_path, 'train.json'))
     save2w2ner(obj=dev, save_path=os.path.join(tgt_root_path, 'dev.json'))
+    save2w2ner(obj=test, save_path=os.path.join(tgt_root_path, 'test.unlabeled.json'))
     print('saving done.\n')
     print('copy dev-dataset to test-dataset.')
     shutil.copyfile(os.path.join(tgt_root_path, 'dev.json'), os.path.join(tgt_root_path, 'test.json'))
@@ -33,21 +37,25 @@ def load_data(data_path=None):
     return data
 
 
-def transform2w2ner(src=None):
+def transform2w2ner(src=None, unlabel=False):
     w2ner_list = []
     for sample in src:
         w2ner_sample = {}
         sentence = list(sample['text'])
         w2ner_sample['sentence'] = sentence
-        labels = sample['label']
-        ner_list = []
-        for tag_name, tag_values in labels.items():
-            for entity, index in tag_values.items():
-                ner = {}
-                ner['index'] = list(range(index[0][0], index[0][-1] + 1))
-                ner['type'] = tag_name.upper()
-                ner_list.append(ner)
-        w2ner_sample['ner'] = ner_list
+        if unlabel:
+            w2ner_sample['id'] = sample['id']
+        if not unlabel:
+            labels = sample['label']
+            ner_list = []
+            for tag_name, tag_values in labels.items():
+                for _, inds in tag_values.items():
+                    for ind in inds:
+                        ner = {}
+                        ner['index'] = list(range(ind[0], ind[-1] + 1))
+                        ner['type'] = tag_name.upper()
+                        ner_list.append(ner)
+            w2ner_sample['ner'] = ner_list
         w2ner_list.append(w2ner_sample)
     return w2ner_list
 

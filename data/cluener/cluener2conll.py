@@ -6,8 +6,8 @@ import shutil
 def cluener2conll(src_root_path=None, tgt_root_path=None):
     """convert cluener2020 dataset to conll style dataset （bio）"""
     """存在nested形式的实体，无法用conll形式标注，随机舍弃"""
-    train_path = os.path.join(src_root_path, 'train.json')
-    dev_path = os.path.join(src_root_path, 'dev.json')
+    train_path = os.path.join(src_root_path, 'train.json.raw')
+    dev_path = os.path.join(src_root_path, 'dev.json.raw')
 
     # load original data
     train = load_data(data_path=train_path)
@@ -21,7 +21,7 @@ def cluener2conll(src_root_path=None, tgt_root_path=None):
 
     # save
     print('\nsaving dataset:\n')
-    save2conll(src=train, save_path=os.path.join(tgt_root_path, 'train.culener.char.bio'))
+    save2conll(src=train, save_path=os.path.join(tgt_root_path, 'train.cluener.char.bio'))
     save2conll(src=dev, save_path=os.path.join(tgt_root_path, 'dev.cluener.char.bio'))
     print('saving done.\n')
     print('copy dev-dataset to test-dataset.')
@@ -49,20 +49,21 @@ def json2conll(data=None):
             i_tag = 'I-' + tag_name.strip().upper()
             for span, index in tag_value.items():
                 assert len(span) == (index[0][-1] - index[0][0] + 1)
-                flag = False
-                for i in range(index[0][0], index[0][-1] + 1):
-                    if i in tag_list:
-                        flag = True
-                        break
-                if flag:
-                    abandon_count += 1
-                    continue
-                for i in range(index[0][0], index[0][-1] + 1):
-                    assert i not in tag_list
-                    if i == index[0][0]:
-                        tag_list[i] = b_tag
-                    else:
-                        tag_list[i] = i_tag
+                for ind in index:
+                    flag = False
+                    for i in range(ind[0], ind[-1] + 1):
+                        if i in tag_list:
+                            flag = True
+                            break
+                    if flag:
+                        abandon_count += 1
+                        continue
+                    for i in range(ind[0], ind[-1] + 1):
+                        assert i not in tag_list
+                        if i == ind[0]:
+                            tag_list[i] = b_tag
+                        else:
+                            tag_list[i] = i_tag
         conll_data = [word + '\t' + tag_list[i] + '\n' if i in tag_list.keys() else word + '\t' + 'O\n' for (i, word) in
                       enumerate(sentence)]
         conll_data_list.append(conll_data)
