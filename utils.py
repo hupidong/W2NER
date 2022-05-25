@@ -111,15 +111,20 @@ def cal_f1(c, p, r):
     return 0, p, r
 
 
-def w2ner2cluener(src=None):
+def w2ner2cluener(src=None, ids=None, debug=False):
     """convert w2ner output json file to cluener json file for evaluation"""
     clue_list = []
-    for sample in src:
+    if ids:
+        assert len(src) == len(ids)
+    for i in range(len(src)):
+        sample = src[i]
         clue_sample = {}
-        sent_id = sample['id']
-        sent = sample['sentence']
-        clue_sample['id'] = sent_id
-        #clue_sample['sentence'] = sent
+        if ids:
+            sent_id = ids[i]
+            clue_sample['id'] = sent_id
+        if debug:
+            sent = sample['sentence']
+            clue_sample['sentence'] = sent
         entities = sample['entity']
         labels = {}
         for entity in entities:

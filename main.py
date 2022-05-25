@@ -1,5 +1,7 @@
 import argparse
 import json
+import os.path
+
 import numpy as np
 import prettytable as pt
 import torch
@@ -106,7 +108,8 @@ class Trainer(object):
                 grid_mask2d = grid_mask2d.clone()
 
                 outputs = torch.argmax(outputs, -1)
-                ent_cross, ent_pred, ent_real, _ = utils.decode(outputs.cpu().numpy(), entity_text, length.cpu().numpy())
+                ent_cross, ent_pred, ent_real, _ = utils.decode(outputs.cpu().numpy(), entity_text,
+                                                                length.cpu().numpy())
 
                 total_ent_real += ent_real
                 total_ent_pred += ent_pred
@@ -138,22 +141,15 @@ class Trainer(object):
         logger.info("\n{}".format(table))
         return ent_f1
 
-    def predict(self, epoch, data_loader, data):
+    def predict(self, data_loader, data):
         self.model.eval()
 
-        pred_result = []
-        label_result = []
-
         result = []
-
-        total_ent_r = 0
-        total_ent_p = 0
-        total_ent_c = 0
 
         i = 0
         with torch.no_grad():
             for data_batch in data_loader:
-                sentence_batch = data[i:i+config.batch_size]
+                sentence_batch = data[i:i + config.batch_size]
                 entity_text = data_batch[-1]
                 data_batch = [data.cuda() for data in data_batch[:-1]]
                 bert_inputs, grid_labels, grid_mask2d, pieces2word, dist_inputs, sent_length = data_batch
@@ -161,59 +157,39 @@ class Trainer(object):
                 outputs = model(bert_inputs, grid_mask2d, dist_inputs, pieces2word, sent_length)
                 length = sent_length
 
-                grid_mask2d = grid_mask2d.clone()
-
                 outputs = torch.argmax(outputs, -1)
-                ent_c, ent_p, ent_r, decode_entities = utils.decode(outputs.cpu().numpy(), entity_text, length.cpu().numpy())
+                ent_c, ent_p, ent_r, decode_entities = utils.decode(outputs.cpu().numpy(), entity_text,
+                                                                    length.cpu().numpy())
 
                 for ent_list, sentence in zip(decode_entities, sentence_batch):
                     sentence = sentence["sentence"]
                     instance = {"sentence": sentence, "entity": []}
                     for ent in ent_list:
                         instance["entity"].append({"text": [sentence[x] for x in ent[0]],
+                                                   "index": ent[0],
                                                    "type": config.vocab.id_to_label(ent[1])})
                     result.append(instance)
 
-                total_ent_r += ent_r
-                total_ent_p += ent_p
-                total_ent_c += ent_c
-
-                grid_labels = grid_labels[grid_mask2d].contiguous().view(-1)
-                outputs = outputs[grid_mask2d].contiguous().view(-1)
-
-                label_result.append(grid_labels.cpu())
-                pred_result.append(outputs.cpu())
                 i += config.batch_size
-
-        label_result = torch.cat(label_result)
-        pred_result = torch.cat(pred_result)
-
-        p, r, f1, _ = precision_recall_fscore_support(label_result.cpu().numpy(),
-                                                      pred_result.cpu().numpy(),
-                                                      average="macro")
-        e_f1, e_p, e_r = utils.cal_f1(total_ent_c, total_ent_p, total_ent_r)
-
-        title = "TEST"
-        logger.info('{} Label F1 {}'.format("TEST", f1_score(label_result.cpu().numpy(),
-                                                            pred_result.cpu().numpy(),
-                                                            average=None)))
-
-        table = pt.PrettyTable(["{} {}".format(title, epoch), 'F1', "Precision", "Recall"])
-        table.add_row(["Label"] + ["{:3.4f}".format(x) for x in [f1, p, r]])
-        table.add_row(["Entity"] + ["{:3.4f}".format(x) for x in [e_f1, e_p, e_r]])
-
-        logger.info("\n{}".format(table))
 
         with open(config.predict_path, "w", encoding="utf-8") as f:
             json.dump(result, f, ensure_ascii=False)
 
-        return e_f1
+        return result
 
+    """
     def save(self, path):
         torch.save(self.model.state_dict(), path)
 
     def load(self, path):
         self.model.load_state_dict(torch.load(path))
+    """
+
+    def save(self, path):
+        torch.save(self.model, path)
+
+    def load(self, path):
+        self.model = torch.load(path)
 
 
 if __name__ == '__main__':
@@ -251,11 +227,16 @@ if __name__ == '__main__':
     parser.add_argument('--use_bert_last_4_layers', type=int, help="1: true, 0: false")
 
     parser.add_argument('--seed', type=int)
+    parser.add_argument('--pred_unlabeled_data', type=bool, default=False)
 
     args = parser.parse_args()
 
     config = config.Config(args)
 
+    save_root_path = os.path.realpath(os.path.join('./models', config.dataset))
+    config.save_root_path = save_root_path
+    if not os.path.exists(save_root_path):
+        os.mkdir(save_root_path)
     logger = utils.get_logger(config.dataset)
     logger.info(config)
     config.logger = logger
@@ -289,6 +270,8 @@ if __name__ == '__main__':
     model = Model(config)
 
     model = model.cuda()
+    total = [param.nelement() for param in model.parameters()]
+    logger.info('Number of parameters: {}'.format(sum(total)))
 
     trainer = Trainer(model)
 
@@ -302,8 +285,45 @@ if __name__ == '__main__':
         if f1 > best_f1:
             best_f1 = f1
             best_test_f1 = test_f1
-            trainer.save(config.save_path)
+            trainer.save(os.path.join(config.save_root_path, 'model.pt'))
     logger.info("Best DEV F1: {:3.4f}".format(best_f1))
     logger.info("Best TEST F1: {:3.4f}".format(best_test_f1))
-    trainer.load(config.save_path)
-    trainer.predict("Final", test_loader, ori_data[-1])
+    trainer.load(os.path.join(config.save_root_path, 'model.pt'))
+    trainer.eval("Final", test_loader, is_test=True)
+
+    if args.pred_unlabeled_data:
+        from data_loader import load_data_bert_predict, collate_fn_predict
+        import config_predict
+        from predict import Predictor
+
+        logger.info('Predicting unlabeled dataset.')
+        config_pred = config_predict.Config('config/cluener_predict.json')
+        config_pred.model = os.path.join('models/{}'.format(config.dataset), 'model.pt')
+        config_pred.tokenizer = os.path.join('models/{}'.format(config.dataset), 'tokenizer.pt')
+        config_pred.vocab = os.path.join('models/{}'.format(config.dataset), 'vocab.pt')
+        with open('data/cluener/test.json.raw', 'r', encoding='utf-8') as f:
+            instances = f.readlines()
+            instances = [json.loads(text) for text in instances]
+            texts = [instance['text'] for instance in instances]
+            ids = [instance['id'] for instance in instances]
+
+        pred_dataset = load_data_bert_predict(texts=texts, config=config_pred)
+        pred_loader = DataLoader(dataset=pred_dataset,
+                                 batch_size=config.batch_size,
+                                 collate_fn=collate_fn_predict,
+                                 shuffle=False,
+                                 num_workers=2,
+                                 drop_last=False)
+        predictor = Predictor(config_pred, args.device)
+        preds = predictor.predict(pred_loader)
+        preds = utils.w2ner2cluener(src=preds, ids=ids, debug=True)
+        save_path = os.path.join('models/{}'.format(config.dataset), 'output.' + config.dataset + '.unlabeled.json')
+        logger.info('Save path is {}'.format(save_path))
+        with open(save_path, 'w', encoding='utf-8') as f:
+            for i, pred in enumerate(preds):
+                pred = json.dumps(pred, ensure_ascii=False)
+                if i != (len(preds) - 1):
+                    f.write(pred), f.write('\n')
+                else:
+                    f.write(pred)
+        logger.info('Predicted data saved.')
