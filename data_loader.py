@@ -5,6 +5,7 @@ from torch.nn.utils.rnn import pad_sequence
 import numpy as np
 import prettytable as pt
 from gensim.models import KeyedVectors
+from tqdm import tqdm
 from transformers import AutoTokenizer, BertTokenizer
 import os
 import utils
@@ -110,7 +111,7 @@ def process_bert(data, tokenizer: BertTokenizer, vocab):
     pieces2word = []
     sent_length = []
 
-    for index, instance in enumerate(data):
+    for index, instance in enumerate(tqdm(data)):
         if len(instance['sentence']) == 0:
             continue
 
@@ -215,6 +216,7 @@ def load_data_bert(config):
     config.logger.info('tokenizer saved to {}.'.format(save_path_token))
     config.logger.info('entity vocab saved to {}.'.format(save_path_vocab))
 
+    config.logger.info("preprocessing original datasets.")
     train_dataset = RelationDataset(*process_bert(train_data, tokenizer, vocab))
     dev_dataset = RelationDataset(*process_bert(dev_data, tokenizer, vocab))
     test_dataset = RelationDataset(*process_bert(test_data, tokenizer, vocab))

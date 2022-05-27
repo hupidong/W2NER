@@ -10,6 +10,7 @@ import torch.nn as nn
 import transformers
 from sklearn.metrics import precision_recall_fscore_support, f1_score
 from torch.utils.data import DataLoader
+from tqdm import tqdm
 
 import config
 import data_loader
@@ -38,22 +39,48 @@ class Trainer(object):
         ]
 
         self.optimizer = transformers.AdamW(params, lr=config.learning_rate, weight_decay=config.weight_decay)
+        """
         self.scheduler = transformers.get_linear_schedule_with_warmup(self.optimizer,
                                                                       num_warmup_steps=config.warm_factor * updates_total,
                                                                       num_training_steps=updates_total)
+
+        self.optimizer = torch.optim.SGD(params, lr=config.learning_rate, weight_decay=config.weight_decay, momentum=0.9)
+        
+        self.scheduler = torch.optim.lr_scheduler.OneCycleLR(self.optimizer, max_lr=[config.bert_learning_rate * 2,
+                                                                                     config.bert_learning_rate * 2,
+                                                                                     config.learning_rate * 2],
+                                                             total_steps=updates_total)
+        
+
+        self.scheduler = torch.optim.lr_scheduler.CyclicLR(optimizer=self.optimizer,
+                                                           base_lr=[config.bert_learning_rate * 0.1,
+                                                                    config.bert_learning_rate * 0.1,
+                                                                    config.learning_rate * 0.1],
+                                                           max_lr=[config.bert_learning_rate,
+                                                                   config.bert_learning_rate,
+                                                                   config.learning_rate],
+                                                           step_size_up=len(train_loader),
+                                                           step_size_down=len(train_loader),
+                                                           cycle_momentum=False)
+        """
+        self.scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer=self.optimizer,
+                                                                              T_0=2, T_mult=2,
+                                                                              eta_min=0)
+
 
     def train(self, epoch, data_loader):
         self.model.train()
         loss_list = []
         pred_result = []
         label_result = []
-
-        for i, data_batch in enumerate(data_loader):
+        iters = len(data_loader)
+        logger.info(f"one train-epoch has {iters} iterations.")
+        for i, data_batch in enumerate(tqdm(data_loader)):
             data_batch = [data.cuda() for data in data_batch[:-1]]
 
             bert_inputs, grid_labels, grid_mask2d, pieces2word, dist_inputs, sent_length = data_batch
 
-            outputs = model(bert_inputs, grid_mask2d, dist_inputs, pieces2word, sent_length)
+            outputs = self.model(bert_inputs, grid_mask2d, dist_inputs, pieces2word, sent_length)
 
             grid_mask2d = grid_mask2d.clone()
             loss = self.criterion(outputs[grid_mask2d], grid_labels[grid_mask2d])
@@ -71,8 +98,12 @@ class Trainer(object):
 
             label_result.append(grid_labels.cpu())
             pred_result.append(outputs.cpu())
+            if config.debug:
+                logger.info(
+                    f"epoch: {epoch}, batch: {i}, lr: {self.optimizer.param_groups[0]['lr']} \t {self.optimizer.param_groups[1]['lr']} \t {self.optimizer.param_groups[2]['lr']}")
 
-            self.scheduler.step()
+            self.scheduler.step(epoch + i / iters)
+            #self.scheduler.step()
 
         label_result = torch.cat(label_result)
         pred_result = torch.cat(pred_result)
@@ -97,12 +128,12 @@ class Trainer(object):
         total_ent_pred = 0
         total_ent_cross = 0
         with torch.no_grad():
-            for i, data_batch in enumerate(data_loader):
+            for i, data_batch in enumerate(tqdm(data_loader)):
                 entity_text = data_batch[-1]
                 data_batch = [data.cuda() for data in data_batch[:-1]]
                 bert_inputs, grid_labels, grid_mask2d, pieces2word, dist_inputs, sent_length = data_batch
 
-                outputs = model(bert_inputs, grid_mask2d, dist_inputs, pieces2word, sent_length)
+                outputs = self.model(bert_inputs, grid_mask2d, dist_inputs, pieces2word, sent_length)
                 length = sent_length
 
                 grid_mask2d = grid_mask2d.clone()
@@ -126,7 +157,7 @@ class Trainer(object):
 
         p, r, f1, _ = precision_recall_fscore_support(label_result.cpu().numpy(),
                                                       pred_result.cpu().numpy(),
-                                                      average="macro")  # 此处是word-word-pair-relation的评价
+                                                      average="macro")  # 此处是word-word-pair-relation的评价,不是label的评价
         ent_f1, ent_p, ent_r = utils.cal_f1(total_ent_cross, total_ent_pred, total_ent_real)
 
         title = "EVAL" if not is_test else "TEST"
@@ -148,13 +179,13 @@ class Trainer(object):
 
         i = 0
         with torch.no_grad():
-            for data_batch in data_loader:
+            for data_batch in tqdm(data_loader):
                 sentence_batch = data[i:i + config.batch_size]
                 entity_text = data_batch[-1]
                 data_batch = [data.cuda() for data in data_batch[:-1]]
                 bert_inputs, grid_labels, grid_mask2d, pieces2word, dist_inputs, sent_length = data_batch
 
-                outputs = model(bert_inputs, grid_mask2d, dist_inputs, pieces2word, sent_length)
+                outputs = self.model(bert_inputs, grid_mask2d, dist_inputs, pieces2word, sent_length)
                 length = sent_length
 
                 outputs = torch.argmax(outputs, -1)
@@ -227,7 +258,9 @@ if __name__ == '__main__':
     parser.add_argument('--use_bert_last_4_layers', type=int, help="1: true, 0: false")
 
     parser.add_argument('--seed', type=int)
-    parser.add_argument('--pred_unlabeled_data', type=bool, default=False)
+    parser.add_argument('--pred_unlabeled_data', action='store_true')
+    parser.add_argument('--choose_by', type=str, default='dev', choices=['dev', 'test'])
+    parser.add_argument('--debug', action='store_true')
 
     args = parser.parse_args()
 
@@ -264,7 +297,7 @@ if __name__ == '__main__':
         for i, dataset in enumerate(datasets)
     )
 
-    updates_total = len(datasets[0]) // config.batch_size * config.epochs
+    updates_total = len(train_loader) * config.epochs
 
     logger.info("Building Model")
     model = Model(config)
@@ -275,18 +308,25 @@ if __name__ == '__main__':
 
     trainer = Trainer(model)
 
-    best_f1 = 0
+    best_dev_f1 = 0
     best_test_f1 = 0
     for i in range(config.epochs):
         logger.info("Epoch: {}".format(i))
         trainer.train(i, train_loader)
-        f1 = trainer.eval(i, dev_loader)
+        dev_f1 = trainer.eval(i, dev_loader)
         test_f1 = trainer.eval(i, test_loader, is_test=True)
-        if f1 > best_f1:
-            best_f1 = f1
-            best_test_f1 = test_f1
-            trainer.save(os.path.join(config.save_root_path, 'model.pt'))
-    logger.info("Best DEV F1: {:3.4f}".format(best_f1))
+        if args.choose_by == 'dev':
+            if dev_f1 > best_dev_f1:
+                best_dev_f1 = dev_f1
+                best_test_f1 = test_f1
+                trainer.save(os.path.join(config.save_root_path, 'model.pt'))
+        elif args.choose_by == 'test':
+            if test_f1 > best_test_f1:
+                best_test_f1 = test_f1
+                best_dev_f1 = dev_f1
+                trainer.save(os.path.join(config.save_root_path, 'model.pt'))
+    logger.info('choose best model by {} dataset, default by dev dataset.'.format(args.choose_by))
+    logger.info("Best DEV F1: {:3.4f}".format(best_dev_f1))
     logger.info("Best TEST F1: {:3.4f}".format(best_test_f1))
     trainer.load(os.path.join(config.save_root_path, 'model.pt'))
     trainer.eval("Final", test_loader, is_test=True)
@@ -314,6 +354,7 @@ if __name__ == '__main__':
                                  shuffle=False,
                                  num_workers=2,
                                  drop_last=False)
+        logger.info('model form {} will be loaded.'.format(config_pred.model))
         predictor = Predictor(config_pred, args.device)
         preds = predictor.predict(pred_loader)
         preds = utils.w2ner2cluener(src=preds, ids=ids, debug=True)

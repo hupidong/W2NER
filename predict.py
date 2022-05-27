@@ -88,8 +88,8 @@ def predict_decode(outputs, length, texts, vocab):
         tmp = (text,)
         for pre in predicts:
             pre = pre.split('-#-')
-            print(pre)
-            print(text)
+            #print(pre)
+            #print(text)
             ind = pre[0].split('-')
             entity = text[int(ind[0]):int(ind[-1]) + 1]
             entity_type = vocab.id2label[int(pre[1])]
