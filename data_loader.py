@@ -4,16 +4,14 @@ from torch.utils.data import Dataset
 from torch.nn.utils.rnn import pad_sequence
 import numpy as np
 import prettytable as pt
-from gensim.models import KeyedVectors
-from tqdm import tqdm
 from transformers import AutoTokenizer, BertTokenizer
 import os
 import utils
-import requests
+from joblib import Parallel, delayed
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
-dis2idx = np.zeros((1600), dtype='int64')
+dis2idx = np.zeros((1000), dtype='int64')
 dis2idx[1] = 1
 dis2idx[2:] = 2
 dis2idx[4:] = 3
@@ -101,78 +99,63 @@ class RelationDataset(Dataset):
     def __len__(self):
         return len(self.bert_inputs)
 
+def process_bert(data, tokenizer: BertTokenizer, vocab, config):
+    results = Parallel(n_jobs=config.n_jobs, verbose=True)(
+        [delayed(to_example)(instance, tokenizer, vocab) for instance in data])
+    results = [list(rel) for rel in zip(*results)]
+    return results #bert_inputs, grid_labels, grid_mask2d, pieces2word, dist_inputs, sent_length, entity_text
 
-def process_bert(data, tokenizer: BertTokenizer, vocab):
-    bert_inputs = []
-    grid_labels = []
-    grid_mask2d = []
-    dist_inputs = []
-    entity_text = []
-    pieces2word = []
-    sent_length = []
 
-    for index, instance in enumerate(tqdm(data)):
-        if len(instance['sentence']) == 0:
-            continue
+def to_example(instance, tokenizer: BertTokenizer, vocab):
+    tokens = [tokenizer.tokenize(word) for word in instance['sentence']]
+    pieces = [piece for pieces in tokens for piece in pieces]
+    _bert_inputs = tokenizer.convert_tokens_to_ids(pieces)
+    _bert_inputs = np.array([tokenizer.cls_token_id] + _bert_inputs + [tokenizer.sep_token_id])
 
-        tokens = [tokenizer.tokenize(word) for word in instance['sentence']]
-        pieces = [piece for pieces in tokens for piece in pieces]
-        _bert_inputs = tokenizer.convert_tokens_to_ids(pieces)
-        _bert_inputs = np.array([tokenizer.cls_token_id] + _bert_inputs + [tokenizer.sep_token_id])
+    """
+    tokens = [tokenizer.tokenize(word) for word in instance['sentence']]
+    _bert_inputs = tokenizer(instance['sentence'], is_split_into_words=True, truncation=True, max_length=512)
+    _bert_inputs = np.array(_bert_inputs['input_ids'])
+    """
 
-        """
-        tokens = [tokenizer.tokenize(word) for word in instance['sentence']]
-        _bert_inputs = tokenizer(instance['sentence'], is_split_into_words=True, truncation=True, max_length=512)
-        _bert_inputs = np.array(_bert_inputs['input_ids'])
-        """
+    length = len(instance['sentence'])
+    _grid_labels = np.zeros((length, length), dtype=np.int)
+    _pieces2word = np.zeros((length, len(_bert_inputs)), dtype=np.bool)
+    _dist_inputs = np.zeros((length, length), dtype=np.int)
+    _grid_mask2d = np.ones((length, length), dtype=np.bool)
 
-        length = len(instance['sentence'])
-        _grid_labels = np.zeros((length, length), dtype=np.int)
-        _pieces2word = np.zeros((length, len(_bert_inputs)), dtype=np.bool)
-        _dist_inputs = np.zeros((length, length), dtype=np.int)
-        _grid_mask2d = np.ones((length, length), dtype=np.bool)
+    if tokenizer is not None:
+        start = 0
+        for i, pieces in enumerate(tokens):
+            if len(pieces) == 0:
+                continue
+            pieces = list(range(start, start + len(pieces)))
+            _pieces2word[i, pieces[0] + 1:pieces[-1] + 2] = 1
+            start += len(pieces)
 
-        if tokenizer is not None:
-            start = 0
-            for i, pieces in enumerate(tokens):
-                if len(pieces) == 0:
-                    continue
-                pieces = list(range(start, start + len(pieces)))
-                _pieces2word[i, pieces[0] + 1:pieces[-1] + 2] = 1
-                start += len(pieces)
+    for k in range(length):
+        _dist_inputs[k, :] += k
+        _dist_inputs[:, k] -= k
 
-        for k in range(length):
-            _dist_inputs[k, :] += k
-            _dist_inputs[:, k] -= k
+    for i in range(length):  # TODO 这段骚操作没看懂
+        for j in range(length):
+            if _dist_inputs[i, j] < 0:
+                _dist_inputs[i, j] = dis2idx[-_dist_inputs[i, j]] + 9
+            else:
+                _dist_inputs[i, j] = dis2idx[_dist_inputs[i, j]]
+    _dist_inputs[_dist_inputs == 0] = 19
 
-        for i in range(length):  # TODO 这段骚操作没看懂
-            for j in range(length):
-                if _dist_inputs[i, j] < 0:
-                    _dist_inputs[i, j] = dis2idx[-_dist_inputs[i, j]] + 9
-                else:
-                    _dist_inputs[i, j] = dis2idx[_dist_inputs[i, j]]
-        _dist_inputs[_dist_inputs == 0] = 19
+    for entity in instance["ner"]:
+        index = entity["index"]
+        for i in range(len(index)):
+            if i + 1 >= len(index):
+                break
+            _grid_labels[index[i], index[i + 1]] = 1
+        _grid_labels[index[-1], index[0]] = vocab.label_to_id(entity["type"])
 
-        for entity in instance["ner"]:
-            index = entity["index"]
-            for i in range(len(index)):
-                if i + 1 >= len(index):
-                    break
-                _grid_labels[index[i], index[i + 1]] = 1
-            _grid_labels[index[-1], index[0]] = vocab.label_to_id(entity["type"])
-
-        _entity_text = set([utils.convert_index_to_text(e["index"], vocab.label_to_id(e["type"]))
-                            for e in instance["ner"]])
-
-        sent_length.append(length)
-        bert_inputs.append(_bert_inputs)
-        grid_labels.append(_grid_labels)
-        grid_mask2d.append(_grid_mask2d)
-        dist_inputs.append(_dist_inputs)
-        pieces2word.append(_pieces2word)
-        entity_text.append(_entity_text)
-
-    return bert_inputs, grid_labels, grid_mask2d, pieces2word, dist_inputs, sent_length, entity_text
+    _entity_text = set([utils.convert_index_to_text(e["index"], vocab.label_to_id(e["type"]))
+                        for e in instance["ner"]])
+    return _bert_inputs, _grid_labels, _grid_mask2d, _pieces2word, _dist_inputs, length, _entity_text
 
 
 def fill_vocab(vocab, dataset):
@@ -191,6 +174,9 @@ def load_data_bert(config):
         dev_data = json.load(f)
     with open('./data/{}/test.json'.format(config.dataset), 'r', encoding='utf-8') as f:
         test_data = json.load(f)
+    train_data = [data for data in train_data if len(data['sentence']) != 0]
+    dev_data = [data for data in dev_data if len(data['sentence']) != 0]
+    test_data = [data for data in test_data if len(data['sentence']) != 0]
 
     tokenizer = AutoTokenizer.from_pretrained(config.bert_name, cache_dir="./cache/")
 
@@ -217,11 +203,10 @@ def load_data_bert(config):
     config.logger.info('entity vocab saved to {}.'.format(save_path_vocab))
 
     config.logger.info("preprocessing original datasets.")
-    train_dataset = RelationDataset(*process_bert(train_data, tokenizer, vocab))
-    dev_dataset = RelationDataset(*process_bert(dev_data, tokenizer, vocab))
-    test_dataset = RelationDataset(*process_bert(test_data, tokenizer, vocab))
+    train_dataset = RelationDataset(*process_bert(train_data, tokenizer, vocab, config))
+    dev_dataset = RelationDataset(*process_bert(dev_data, tokenizer, vocab,config))
+    test_dataset = RelationDataset(*process_bert(test_data, tokenizer, vocab, config))
     return (train_dataset, dev_dataset, test_dataset), (train_data, dev_data, test_data)
-
 
 def process_bert_predict(texts, tokenizer):
     bert_inputs = []

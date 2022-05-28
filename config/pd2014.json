@@ -28,7 +28,7 @@
   "warm_factor": 0.1,
 
   "use_bert_last_4_layers": true,
-  "use_checkpoint": true,
+  "use_checkpoint": false,
   "seed": 123
 
 }

@@ -261,6 +261,7 @@ if __name__ == '__main__':
     parser.add_argument('--pred_unlabeled_data', action='store_true')
     parser.add_argument('--choose_by', type=str, default='dev', choices=['dev', 'test'])
     parser.add_argument('--debug', action='store_true')
+    parser.add_argument('--n_jobs', type=int, default=1)
 
     args = parser.parse_args()
 
